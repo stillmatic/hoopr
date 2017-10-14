@@ -1,0 +1,6 @@
+base
+magrittr
+tidyjson
+purrr
+dplyr
+bindrcpp

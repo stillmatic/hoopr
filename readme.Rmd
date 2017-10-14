@@ -1,0 +1,25 @@
+---
+title: "HoopR"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+R package for pulling and working with NBA data.
+
+## Status
+
+I plan to work on this package throughout the 2017-18 NBA season.
+
+**TODO**
+
+* [] NBA stats API
+* [] NBA data API
+* [] BBRef
+* [] NBA play-by-play
+* [] API call caching
+
+Go Celtics!
+

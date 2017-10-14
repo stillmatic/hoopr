@@ -1,0 +1,163 @@
+---
+title: "Writing hoopR"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(magrittr)
+library(tidyjson)
+library(purrr)
+library(dplyr)
+```
+
+## Motivation
+
+I want to document my process of exploring a data source and writing a package to scrape it.
+
+## Data process
+
+At a high level, my process is to examine the data, parsewrite naive parsing systems, then go back and fix the infrastructure when you fully understand the problem. In this case, I have a general sense of what the data should look like (e.g. player stats and so on) but not a great sense of how the NBA.com (or some other data source) data is architectured.
+
+A [Quora answer](https://www.quora.com/Is-there-an-NBA-API-for-free-that-has-live-stats) took me to the NBA [today](http://data.nba.net/10s/prod/v1/today.json) file. 
+
+```{r}
+nba_api_data <- function() {
+  # TODO: cache this call
+  link_data <- jsonlite::fromJSON("http://data.nba.net/10s/prod/v1/today.json")
+  current_year <- link_data$seasonScheduleYear
+  links <- link_data$links
+  return(links)
+}
+api_info <- nba_api_data() 
+api_info %>% head
+```
+
+This produces the up to date links to various endpoints in the NBA universe. Variable names are templated here e.g. `{{gameDate}}`. 
+
+Next, we look at the calendar json. This gives us the number of games per day, but more importantly, it gives a canonical listing of game days (and the date format, never obvious!)
+
+```{r}
+current_calendar <- function() {
+    # i think this is the number of games per day?
+    cal_data <- jsonlite::fromJSON("http://data.nba.net/10s/prod/v1/calendar.json")
+    cal_data <- cal_data[-c(1:4)]
+    dates <- names(cal_data)
+    games <- unlist(cal_data)
+    return(data.frame(date = dates, games = games, row.names = NULL))
+}
+cal_df <- current_calendar()
+cal_df %>% head()
+```
+
+## Parsing scoreboards
+
+To get a sense of what scoreboards look like for a given day, let's pick the first day of the season and examine the games. Note that the format of the url is consistent, where we need to swap the date of the game (but now we have a canonical list of all gamedays).
+
+A lot of the data are treated as nested data frames, because apparently it is not enough to say "this game was played in AmericanAirlines Arena". In a database setting, typically we would have a separate `arena` table and include only an arena ID here. But this is the wild wild west!
+
+```{r}
+game <- jsonlite::fromJSON("http://data.nba.net/10s/prod/v1/20171001/scoreboard.json") %>% extract2("games")
+game <- game %>% jsonlite::flatten(recursive=T)
+```
+
+This give us a very large (column-wise) data frame, because the API has several nested lists of unimportant data (e.g. broadcast info). This info could be valuable but might be best included in a separate table. We then isolate a number of variables that we know we need.
+
+```{r}
+game2 <- game %>% 
+    dplyr::select(seasonStageId, seasonYear, startDateEastern, gameId, statusNum, 
+                  startTimeUTC, arena.name, gameDuration.hours, gameDuration.minutes,
+                  visitor_id = vTeam.teamId, visitor_code = vTeam.triCode,
+                  visitor_win = vTeam.win, visitor_loss = vTeam.loss, visitor_series_win = vTeam.seriesWin,
+                  visitor_series_loss = vTeam.seriesLoss, visitor_score = vTeam.score,
+                  visitor_linescore = vTeam.linescore,
+                  home_id = hTeam.teamId, home_code = hTeam.triCode,
+                  home_win = hTeam.win, home_loss = hTeam.loss, home_series_win = hTeam.seriesWin,
+                  home_series_loss = hTeam.seriesLoss, home_score = hTeam.score,
+                  home_linescore = hTeam.linescore)
+```
+
+We can also break out the linescore, i.e. points scored by quarter.
+
+```{r}
+game2 <- game2 %>% 
+    rowwise %>% 
+    mutate(visitor_score_q1 = visitor_linescore$score[1],
+              visitor_score_q2 = visitor_linescore$score[2],
+              visitor_score_q3 = visitor_linescore$score[3],
+              visitor_score_q4 = visitor_linescore$score[4],
+              home_score_q1 = home_linescore$score[1],
+              home_score_q2 = home_linescore$score[2],
+              home_score_q3 = home_linescore$score[3],
+              home_score_q4 = home_linescore$score[4]) %>%
+    select(-home_linescore, -visitor_linescore)
+```
+
+We can combine all of this to get us a function that parses the games from a given date.
+
+```{r, echo=F}
+parse_games_from_date <- function(gameday) {
+    tryCatch({
+        game_data_url <- sprintf("http://data.nba.net/10s/prod/v1/%s/scoreboard.json", gameday)
+    game <- jsonlite::fromJSON(game_data_url) %>% extract2("games")
+    game <- game %>% jsonlite::flatten(recursive=T)
+    if(!("arena.name" %in% names(game))) {
+        game$arena.name <- ""
+    }
+    game2 <- game %>% 
+        dplyr::select(seasonStageId, seasonYear, startDateEastern, gameId, statusNum, 
+                      startTimeUTC, arena.name, gameDuration.hours, gameDuration.minutes,
+                      visitor_id = vTeam.teamId, visitor_code = vTeam.triCode,
+                      visitor_win = vTeam.win, visitor_loss = vTeam.loss, visitor_series_win = vTeam.seriesWin,
+                      visitor_series_loss = vTeam.seriesLoss, visitor_score = vTeam.score,
+                      visitor_linescore = vTeam.linescore,
+                      home_id = hTeam.teamId, home_code = hTeam.triCode,
+                      home_win = hTeam.win, home_loss = hTeam.loss, home_series_win = hTeam.seriesWin,
+                      home_series_loss = hTeam.seriesLoss, home_score = hTeam.score,
+                      home_linescore = hTeam.linescore)
+    game2 <- game2 %>% 
+        rowwise %>% 
+        mutate(visitor_score_q1 = coalesce(visitor_linescore$score[1], "-1"),
+                  visitor_score_q2 = coalesce(visitor_linescore$score[2], "-1"),
+                  visitor_score_q3 = coalesce(visitor_linescore$score[3], "-1"),
+                  visitor_score_q4 = coalesce(visitor_linescore$score[4], "-1"),
+                  home_score_q1 = coalesce(home_linescore$score[1], "-1"),
+                  home_score_q2 = coalesce(home_linescore$score[2], "-1"),
+                  home_score_q3 = coalesce(home_linescore$score[3], "-1"),
+                  home_score_q4 = coalesce(home_linescore$score[4], "-1")) %>%
+                  select(-home_linescore, -visitor_linescore)
+
+    return(game2)
+    }, error = function(e) {
+        cat(paste(gameday))
+        cat(paste(e))
+    })
+}
+```
+
+Here, we get the games from 2017-10-02:
+
+```{r}
+parse_games_from_date("20161002") %>% knitr::kable()
+```
+
+Because we got all the game dates from the calendar, we can then collect data for all the games.
+
+```{r, cache=T, eval=F}
+game_dates <- cal_df %>%
+    filter(games > 0) %$%
+    date
+game_dates <- game_dates[as.numeric(paste(game_dates)) < 20171014]
+game_df <- purrr::map_df(game_dates, parse_games_from_date)
+```
+
+Interestingly, our parsing fails on an all-star game, which does remind us that we should be safer with how we parse data. This is typically done with having a default value if mising.
+
+```{r}
+fail_game <- jsonlite::fromJSON("http://data.nba.net/10s/prod/v1/20170218/scoreboard.json") %>% extract2("games")
+fail_game <- fail_game %>% jsonlite::flatten(recursive=T)
+
+fail_game %>% knitr::kable()
+```
+
+## P
