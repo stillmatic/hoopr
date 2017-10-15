@@ -160,4 +160,35 @@ fail_game <- fail_game %>% jsonlite::flatten(recursive=T)
 fail_game %>% knitr::kable()
 ```
 
-## P
+## Parsing game stats
+
+Getting play by play info is pretty easy.
+
+```{r}
+parse_pbp_game <- function(date, game) {
+    
+    pbp_url_q1 <- sprintf("http://data.nba.net/10s/prod/v1/%s/%s_pbp_%s.json", 
+                      date, game, 1)
+    pbp_url_q2 <- sprintf("http://data.nba.net/10s/prod/v1/%s/%s_pbp_%s.json", 
+                      date, game, 2)
+    pbp_url_q3 <- sprintf("http://data.nba.net/10s/prod/v1/%s/%s_pbp_%s.json", 
+                      date, game, 3)
+    pbp_url_q4 <- sprintf("http://data.nba.net/10s/prod/v1/%s/%s_pbp_%s.json", 
+                      date, game, 4)
+    pbp_1 <- jsonlite::fromJSON(pbp_url_q1, flatten=T)$plays
+    pbp_2 <- jsonlite::fromJSON(pbp_url_q2, flatten=T)$plays
+    pbp_3 <- jsonlite::fromJSON(pbp_url_q3, flatten=T)$plays
+    pbp_4 <- jsonlite::fromJSON(pbp_url_q4, flatten=T)$plays
+    return(dplyr::bind_rows(pbp_1, pbp_2, pbp_3, pbp_4))
+}
+
+pbp_df <- parse_pbp_game("20171013", "0011700069") 
+```
+
+
+```{r}
+pbp_df %>% 
+    filter(eventMsgType == 1)
+```
+
+
